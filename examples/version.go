@@ -1,4 +1,4 @@
-package main
+package main 
 
 var (
 	appName      = "extract-vmlinux-v2"

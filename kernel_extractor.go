@@ -1,4 +1,4 @@
-package main
+package vmlinux 
 
 /*
 	Original source: https://github.com/Caesurus/extract-vmlinux-v2

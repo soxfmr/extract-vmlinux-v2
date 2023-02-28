@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/akamensky/argparse"
+	"github.com/soxfmr/extract-vmlinux-v2"
 )
 
 func main() {

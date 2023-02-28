@@ -1,4 +1,4 @@
-module github.com/Caesurus/extract-vmlinux-v2
+module github.com/soxfmr/extract-vmlinux-v2
 
 go 1.14
 
