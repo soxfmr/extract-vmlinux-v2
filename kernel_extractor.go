@@ -1,4 +1,4 @@
-package vmlinux 
+package vmlinux
 
 /*
 	Original source: https://github.com/Caesurus/extract-vmlinux-v2
@@ -134,24 +134,19 @@ func createTempFileOutput(data []byte, fileprefix string) {
 func (k KernelExtractor) ExtractAll() map[string][]byte {
 	var files = make(map[string][]byte)
 
-	for desc, algo := range k.algos {
+	for _, algo := range k.algos {
 		found, offsets := k.searchPattern(algo.pattern)
 		if found {
-			fmt.Printf("%s header found at %v\n", desc, offsets)
 			for _, offset := range offsets {
-				fmt.Printf("Attempting extraction with %s offset:%d \n", desc, offset)
 				data, err := k.callExtractor(algo, offset)
 
 				if nil != err {
 					fmt.Println(err)
 				} else if len(data) > 0 {
-					fmt.Printf("%d bytes extracted\n", len(data))
 					filename := fmt.Sprintf("vmlinux_%s_%d.bin", algo.Name, offset)
 					files[filename] = data
 				}
 			}
-		} else {
-			fmt.Printf(" No %s found\n", desc)
 		}
 	}
 	return files
@@ -194,17 +189,15 @@ func (k KernelExtractor) searchZSTDPattern() (bool, []int) {
 }
 
 // ListAllHeadersFound ...
-func (k KernelExtractor) ListAllHeadersFound() error {
-
+func (k KernelExtractor) ListAllHeadersFound() map[int]string {
+	var result map[int]string
 	for desc, algo := range k.algos {
 		found, offsets := k.searchPattern(algo.pattern)
 		if found {
-			fmt.Printf("%s header found at %v\n", desc, offsets)
-		} else {
-			fmt.Printf(" No %s found\n", desc)
+			for _, offset := range offsets {
+				result[offset] = desc
+			}
 		}
-
 	}
-
-	return nil
+	return result
 }

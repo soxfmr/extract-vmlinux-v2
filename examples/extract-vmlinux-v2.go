@@ -33,7 +33,6 @@ func main() {
 		os.Exit(0)
 	}
 
-
 	if len(*inputFile) > 0 {
 		kernelFile, err := os.Open(*inputFile)
 		if err != nil {
@@ -45,9 +44,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		ke := NewKernelExtractor(&data, *ignoreValidation)
+		ke := vmlinux.NewKernelExtractor(&data, *ignoreValidation)
 
-		if *listOnly{
+		if *listOnly {
 			ke.ListAllHeadersFound()
 			os.Exit(0)
 		}
