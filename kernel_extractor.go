@@ -12,7 +12,7 @@ import (
 	"errors"
 	"github.com/itchio/lzma"
 	"github.com/pierrec/lz4"
-	"github.com/smira/go-xz"
+	"github.com/xi2/xz"
 	"io"
 	"math"
 	"os"
@@ -28,7 +28,11 @@ var algos = []supportedAlgo{
 	{
 		Name: "GZIP",
 		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
-			return gzip.NewReader(r)
+			gzipIn, err := gzip.NewReader(r)
+			if err == nil {
+				gzipIn.Multistream(false)
+			}
+			return gzipIn, err
 		},
 		pattern: []byte("\037\213\010"),
 	},
@@ -56,10 +60,11 @@ var algos = []supportedAlgo{
 	{
 		Name: "XZ",
 		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
-			xzIn, err := xz.NewReader(r)
+			xzIn, err := xz.NewReader(r, 0)
 			if err != nil {
 				return nil, err
 			}
+			xzIn.Multistream(false)
 			return io.NopCloser(xzIn), nil
 		},
 		pattern: []byte("\3757zXZ\000"),
