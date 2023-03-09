@@ -6,20 +6,18 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
+	vmlinux "github.com/soxfmr/extract-vmlinux-v2"
 	"log"
 	"os"
 
 	"github.com/akamensky/argparse"
-	"github.com/soxfmr/extract-vmlinux-v2"
 )
 
 func main() {
 	parser := argparse.NewParser(appName, "A more robust vmlinux extractor")
-	var inputFile *string = parser.String("f", "file", &argparse.Options{Help: "Input file to be processed"})
-	var ignoreValidation *bool = parser.Flag("i", "ignore", &argparse.Options{Help: "Ignore kernel verification, extract whatever is found"})
-	var listOnly *bool = parser.Flag("l", "list", &argparse.Options{Help: "List headers and offset found"})
-	var printVersion *bool = parser.Flag("V", "version", &argparse.Options{Help: "Print version info"})
+	var inputFile = parser.String("f", "file", &argparse.Options{Help: "Input file to be processed"})
+	var outputFile = parser.String("f", "output", &argparse.Options{Help: "Output file to be stored the vmlinux"})
+	var printVersion = parser.Flag("V", "version", &argparse.Options{Help: "Print version info"})
 
 	// Parse input
 	err := parser.Parse(os.Args)
@@ -36,34 +34,21 @@ func main() {
 	if len(*inputFile) > 0 {
 		kernelFile, err := os.Open(*inputFile)
 		if err != nil {
-			fmt.Println("couldn't open file")
-			os.Exit(2)
+			log.Fatalf("couldn't open the input file: %s", err)
 		}
 
-		data, err := ioutil.ReadAll(kernelFile)
+		var extractedFile *os.File
+		if len(*outputFile) > 0 {
+			extractedFile, err = os.Open(*outputFile)
+		} else {
+			extractedFile, err = os.CreateTemp("", "vmlinux")
+		}
 		if err != nil {
-			log.Fatal(err)
-		}
-		ke := vmlinux.NewKernelExtractor(&data, *ignoreValidation)
-
-		if *listOnly {
-			ke.ListAllHeadersFound()
-			os.Exit(0)
+			log.Fatalf("couldn't open the output file: %s", err)
 		}
 
-		files := ke.ExtractAll()
-
-		for filename, extractedData := range files {
-			file, err := ioutil.TempFile("", filename)
-			if err != nil {
-				log.Fatal(err)
-			}
-			bytesWritten, err := file.Write(extractedData)
-			if err == nil {
-				fmt.Printf("Wrote %d bytes to file: %s\n", bytesWritten, file.Name())
-			} else {
-				fmt.Println("Extraction failed", err)
-			}
+		if err := vmlinux.ExtractTo(kernelFile, extractedFile); err != nil {
+			log.Fatalf("couldn't extract the kernel image: %s", err)
 		}
 	}
 

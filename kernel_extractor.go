@@ -5,199 +5,136 @@ package vmlinux
 */
 
 import (
+	"bufio"
 	"bytes"
-	"fmt"
-	"index/suffixarray"
-	"io/ioutil"
-	"log"
-	"sort"
+	"compress/bzip2"
+	"compress/gzip"
+	"errors"
+	"github.com/itchio/lzma"
+	"github.com/pierrec/lz4"
+	"github.com/smira/go-xz"
+	"io"
+	"math"
+	"os"
 )
 
 type supportedAlgo struct {
 	Name        string
-	ExtractFunc func(data []byte) (resData []byte, err error)
-	Suffix      string
+	ExtractFunc func(r io.Reader) (reader io.ReadCloser, err error)
 	pattern     []byte
 }
 
-// KernelExtractor ...
-type KernelExtractor struct {
-	data             []byte
-	algos            map[string]supportedAlgo
-	ignoreValidation bool
+var algos = []supportedAlgo{
+	{
+		Name: "GZIP",
+		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
+			return gzip.NewReader(r)
+		},
+		pattern: []byte("\037\213\010"),
+	},
+	{
+		Name: "BZIP",
+		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
+			return io.NopCloser(bzip2.NewReader(r)), nil
+		},
+		pattern: []byte("BZh"),
+	},
+	{
+		Name: "LZMA",
+		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
+			return lzma.NewReader(r), nil
+		},
+		pattern: []byte("\135\000\000\000"),
+	},
+	{
+		Name: "LZ4",
+		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
+			return io.NopCloser(lz4.NewReaderLegacy(r)), nil
+		},
+		pattern: []byte("\002!L\030"),
+	},
+	{
+		Name: "XZ",
+		ExtractFunc: func(r io.Reader) (reader io.ReadCloser, err error) {
+			xzIn, err := xz.NewReader(r)
+			if err != nil {
+				return nil, err
+			}
+			return io.NopCloser(xzIn), nil
+		},
+		pattern: []byte("\3757zXZ\000"),
+	},
 }
 
-// NewKernelExtractor ...
-func NewKernelExtractor(data *[]byte, ignoreValidation bool) *KernelExtractor {
-	k := KernelExtractor{data: *data}
-	k.ignoreValidation = ignoreValidation
-
-	k.algos = make(map[string]supportedAlgo)
-
-	k.algos["GZIP"] = supportedAlgo{
-		Name:        "GZIP",
-		ExtractFunc: extractGzipData,
-		Suffix:      "gz",
-		pattern:     []byte("\037\213\010"),
+func IsKernelImage(r io.ReaderAt) bool {
+	var ident [16]uint8
+	if _, err := r.ReadAt(ident[0:], 0); err != nil {
+		return false
 	}
 
-	k.algos["BZIP"] = supportedAlgo{
-		Name:        "BZIP",
-		ExtractFunc: extractBzipData,
-		Suffix:      "bz",
-		pattern:     []byte("BZh"),
+	if ident[0] != '\x7f' || ident[1] != 'E' || ident[2] != 'L' || ident[3] != 'F' {
+		return false
 	}
 
-	k.algos["LZMA"] = supportedAlgo{
-		Name:        "LZMA",
-		ExtractFunc: extractLZMAData,
-		Suffix:      "lzma",
-		pattern:     []byte("\135\000\000\000"),
+	return true
+}
+
+// Extract will attempt to extract the vmlinux file the memory
+func Extract(r io.ReaderAt) ([]byte, error) {
+	b := new(bytes.Buffer)
+	w := bufio.NewWriter(b)
+
+	if err := ExtractTo(r, w); err != nil {
+		return nil, err
 	}
 
-	k.algos["LZ4"] = supportedAlgo{
-		Name:        "LZ4",
-		ExtractFunc: extractLZ4Data,
-		Suffix:      "lz4",
-		pattern:     []byte("\002!L\030"),
+	return b.Bytes(), nil
+}
+
+// ExtractTo will attempt to extract the vmlinux file to an io.Writer
+func ExtractTo(r io.ReaderAt, w io.Writer) error {
+	sectionReader := io.NewSectionReader(r, 0, math.MaxInt64)
+
+	// Search the compressor signature in the first 64K bytes
+	headBuffer := make([]byte, 65535)
+	if n, err := sectionReader.Read(headBuffer); n < 65535 || err != nil {
+		return err
 	}
 
-	k.algos["XZ"] = supportedAlgo{
-		Name:        "XZ",
-		ExtractFunc: extractXZData,
-		Suffix:      "xz",
-		pattern:     []byte("\3757zXZ\000"),
-	}
-	/*
-		k.algos["ZSTD"] = supportedAlgo{
-			Name:        "ZSTD",
-			ExtractFunc: extractZstdData,
-			Suffix:      "zstd",
-			pattern:     []byte("(\265/\375"),
+	for _, algo := range algos {
+		offset := bytes.Index(headBuffer, algo.pattern)
+		if offset == -1 {
+			continue
 		}
 
-		k.algos["LZOP"] = supportedAlgo{
-			Name:        "LZOP",
-			ExtractFunc: nil,
-			Suffix:      "lzop",
-			pattern:     []byte("\211\114\132"),
+		if _, err := sectionReader.Seek(int64(offset), io.SeekStart); err != nil {
+			return err
 		}
-	*/
-	return &k
-}
-func (k KernelExtractor) isKernelImage(data []byte) bool {
-	if k.ignoreValidation {
-		return true
-	}
-	flagLinux := false
-	flagParam := false
 
-	flagLinux = bytes.Index(data, []byte("Linux version")) > 0
-	//flagSyscall := bytes.IndexAny(data, "syscall") > 0
-	flagParam = bytes.Index(data, []byte("jiffies")) > 0
+		buf := bufio.NewReaderSize(sectionReader, os.Getpagesize())
+		decompressor, err := algo.ExtractFunc(buf)
 
-	if flagLinux && flagParam {
-		return true
-	}
-	return false
-}
-
-func (k KernelExtractor) callExtractor(algo supportedAlgo, offset int) (extractedData []byte, err error) {
-	if algo.ExtractFunc != nil {
-		extractedData, err := algo.ExtractFunc(k.ReturnBytes(offset))
 		if err == nil {
-			if k.isKernelImage(extractedData) {
-				return extractedData, err
+			magic := make([]byte, 16)
+			if _, err := decompressor.Read(magic); err != nil {
+				return err
 			}
-			err = fmt.Errorf("Doesn't look like that was a valid Kernel Image, use -i to dump extracted content anyway")
-		}
-	} else {
-		err = fmt.Errorf("Currently don't support %s extraction", algo.Name)
-	}
-	return nil, err
-}
 
-func createTempFileOutput(data []byte, fileprefix string) {
-	file, err := ioutil.TempFile("", fileprefix)
-	if err != nil {
-		log.Fatal(err)
-	}
-	bytesWritten, err := file.Write(data)
-	if err == nil {
-		fmt.Printf("Wrote %d bytes to file: %s\n", bytesWritten, file.Name())
-	} else {
-		fmt.Println("Extraction failed", err)
-	}
-}
-
-// ExtractAll will attempt to extract all recognized compressed files
-func (k KernelExtractor) ExtractAll() map[string][]byte {
-	var files = make(map[string][]byte)
-
-	for _, algo := range k.algos {
-		found, offsets := k.searchPattern(algo.pattern)
-		if found {
-			for _, offset := range offsets {
-				data, err := k.callExtractor(algo, offset)
-
-				if nil != err {
-					fmt.Println(err)
-				} else if len(data) > 0 {
-					filename := fmt.Sprintf("vmlinux_%s_%d.bin", algo.Name, offset)
-					files[filename] = data
-				}
+			if !IsKernelImage(bytes.NewReader(magic)) {
+				continue
 			}
+
+			if _, err := w.Write(magic); err != nil {
+				return err
+			}
+
+			if _, err := io.Copy(w, decompressor); err != nil {
+				return err
+			}
+
+			return nil
 		}
 	}
-	return files
-}
 
-// ReturnBytes Return []bytes from a given offset into the buffer
-func (k KernelExtractor) ReturnBytes(offset int) []byte {
-	return k.data[offset:]
-}
-
-func (k KernelExtractor) searchPattern(pattern []byte) (bool, []int) {
-	index := suffixarray.New(k.data)
-	offsets := index.Lookup(pattern, -1)
-	if offsets == nil {
-		return false, nil
-	}
-	sort.Ints(offsets)
-	return true, offsets
-}
-func (k KernelExtractor) searchGZIPPattern() (bool, []int) {
-	return k.searchPattern(k.algos["GZIP"].pattern)
-}
-func (k KernelExtractor) searchBZIPPattern() (bool, []int) {
-	return k.searchPattern(k.algos["BZIP"].pattern)
-}
-func (k KernelExtractor) searchLZMAPattern() (bool, []int) {
-	return k.searchPattern(k.algos["LZMA"].pattern)
-}
-func (k KernelExtractor) searchLZOPPattern() (bool, []int) {
-	return k.searchPattern(k.algos["LZOP"].pattern)
-}
-func (k KernelExtractor) searchLZ4Pattern() (bool, []int) {
-	return k.searchPattern(k.algos["LZ4"].pattern)
-}
-func (k KernelExtractor) searchXZPattern() (bool, []int) {
-	return k.searchPattern(k.algos["XZ"].pattern)
-}
-func (k KernelExtractor) searchZSTDPattern() (bool, []int) {
-	return k.searchPattern(k.algos["ZSTD"].pattern)
-}
-
-// ListAllHeadersFound ...
-func (k KernelExtractor) ListAllHeadersFound() map[int]string {
-	var result map[int]string
-	for desc, algo := range k.algos {
-		found, offsets := k.searchPattern(algo.pattern)
-		if found {
-			for _, offset := range offsets {
-				result[offset] = desc
-			}
-		}
-	}
-	return result
+	return errors.New("kernel image is not found")
 }
