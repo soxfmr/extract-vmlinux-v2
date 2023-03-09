@@ -13,7 +13,7 @@ extract-vmlinux-v2 -file /boot/vmlinuz -output /tmp/vmlinux
 ## Usage
 
 ```shell
-go get -u github.com/soxfmr/extract-vmlinux-v2@latest
+go get github.com/soxfmr/extract-vmlinux-v2@latest
 ```
 
 decompress the kernel image and hold in memory:
